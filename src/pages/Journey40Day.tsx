@@ -3,10 +3,11 @@ import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { FileUploadPopup, type UploadFile } from '../components/FileUploadPopup';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import ChevronLeftIcon from '../assets/icons/chevron-left';
 import PlusIcon from '../assets/icons/plus';
 import CloseIcon from '../assets/icons/close';
-import { publishContent, updateContentWithFiles, fetchContentById, type ContentDocument } from '../lib/content';
+import { deleteContent, publishContent, updateContentWithFiles, fetchContentById, type ContentDocument } from '../lib/content';
 import { showAppwriteError } from '../lib/notifications';
 
 interface JourneyData {
@@ -24,6 +25,7 @@ export const Journey40Day = () => {
   const params = useParams();
   const journeyData = location.state?.journeyData as JourneyData | undefined;
   const isEditMode = !!params.id || !!journeyData;
+  const contentId = params.id || journeyData?.id;
 
   const [contentTitle, setContentTitle] = useState('');
   const [day, setDay] = useState<number | ''>('');
@@ -40,19 +42,34 @@ export const Journey40Day = () => {
   const [originalDay, setOriginalDay] = useState<number | ''>('');
   const [originalTasks, setOriginalTasks] = useState<string[]>([]);
   const [isFree, setIsFree] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   // Load data when component mounts or journeyData changes
   useEffect(() => {
     const loadContentData = async () => {
-      if (journeyData?.id && !originalContentData) {
+      const idToLoad = contentId;
+      if (idToLoad && !originalContentData) {
         try {
-          const contentDoc = await fetchContentById(journeyData.id);
+          const contentDoc = await fetchContentById(idToLoad);
           if (contentDoc) {
             setOriginalContentData(contentDoc);
             setIsFree(!!contentDoc.isFree);
             // Load audio files from URLs
             if (contentDoc.files && contentDoc.files.length > 0) {
               setUploadedAudioUrls(contentDoc.files);
+            }
+            // If we navigated directly to an edit route without state, hydrate fields from the document
+            if (!journeyData) {
+              setContentTitle(contentDoc.title || '');
+              setOriginalTitle(contentDoc.title || '');
+              const dayValue = contentDoc.day !== undefined ? contentDoc.day : '';
+              setDay(dayValue);
+              setOriginalDay(dayValue);
+              const docTasks = contentDoc.tasks && contentDoc.tasks.length > 0 ? contentDoc.tasks : [''];
+              setTasks(docTasks);
+              setOriginalTasks(contentDoc.tasks ? [...contentDoc.tasks] : []);
             }
           }
         } catch (error) {
@@ -83,7 +100,7 @@ export const Journey40Day = () => {
     };
 
     loadContentData();
-  }, [journeyData, originalContentData]);
+  }, [journeyData, originalContentData, contentId]);
 
   const handleTaskChange = (index: number, value: string) => {
     const newTasks = [...tasks];
@@ -128,7 +145,7 @@ export const Journey40Day = () => {
 
   // Check if there are unsaved changes
   const hasUnsavedChanges = () => {
-    if (!journeyData?.id) return false;
+    if (!contentId) return false;
     
     const titleChanged = contentTitle.trim() !== originalTitle.trim();
     const dayChanged = day !== originalDay;
@@ -147,7 +164,7 @@ export const Journey40Day = () => {
   };
 
   const handleSave = async () => {
-    if (!journeyData?.id) {
+    if (!contentId) {
       showAppwriteError(new Error('Content ID is required to save changes'));
       return;
     }
@@ -178,7 +195,7 @@ export const Journey40Day = () => {
     try {
       // Update content (uploads new files and updates content document, preserving existing URLs)
       await updateContentWithFiles(
-        journeyData.id,
+        contentId,
         {
           title: contentTitle.trim(),
           type: 'forty_day_journey',
@@ -198,7 +215,7 @@ export const Journey40Day = () => {
       );
 
       // Reload content to get updated URLs
-      const updatedContent = await fetchContentById(journeyData.id);
+      const updatedContent = await fetchContentById(contentId);
       if (updatedContent) {
         setOriginalContentData(updatedContent);
         
@@ -225,6 +242,11 @@ export const Journey40Day = () => {
       setIsSaving(false);
       setSaveProgress(0);
     }
+  };
+
+  const handleEdit = () => {
+    if (!contentId) return;
+    setIsEditing(true);
   };
 
   const handlePublish = async () => {
@@ -283,8 +305,28 @@ export const Journey40Day = () => {
   };
 
   const handleDelete = () => {
-    // TODO: Implement delete functionality
-    console.log('Delete clicked');
+    if (!contentId) {
+      showAppwriteError(new Error('Content ID is required to delete'));
+      return;
+    }
+    setIsDeleteModalOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!contentId) {
+      showAppwriteError(new Error('Content ID is required to delete'));
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      await deleteContent(contentId);
+      setIsDeleteModalOpen(false);
+      navigate('/content-management');
+    } catch (error) {
+      console.error('Error deleting content:', error);
+      setIsDeleting(false);
+    }
   };
 
   const handleCancel = () => {
@@ -315,10 +357,14 @@ export const Journey40Day = () => {
           <div className="flex items-center gap-4">
             <Button
               className="w-[120px] h-[56px]"
-              onClick={handleSave}
-              disabled={isSaving || !journeyData?.id}
+              onClick={isEditing ? handleSave : handleEdit}
+              disabled={
+                isSaving ||
+                !contentId ||
+                (isEditing && !hasUnsavedChanges())
+              }
             >
-              {isSaving ? `Saving... ${saveProgress}%` : hasUnsavedChanges() ? 'Save' : 'Edit'}
+              {isSaving ? `Saving... ${saveProgress}%` : isEditing ? 'Save' : 'Edit'}
             </Button>
             {isSaving && saveProgress > 0 && saveProgress < 100 && (
               <div className="w-[200px] h-[4px] bg-[rgba(255,255,255,0.1)] rounded-full overflow-hidden">
@@ -332,9 +378,9 @@ export const Journey40Day = () => {
               variant="outline"
               className="w-[120px] h-[56px]"
               onClick={handleDelete}
-              disabled={isSaving}
+              disabled={isSaving || isDeleting || !contentId}
             >
-              Delete
+              {isDeleting ? 'Deleting...' : 'Delete'}
             </Button>
           </div>
         )}
@@ -358,7 +404,8 @@ export const Journey40Day = () => {
                     value={contentTitle}
                     onChange={(e) => setContentTitle(e.target.value)}
                     placeholder=" "
-                    className={`w-full ${isEditMode ? 'bg-transparent border-none' : 'h-[56px] bg-[#131313] border border-[#965cdf] rounded-[16px] px-4 focus:ring-2 focus:ring-[#965cdf]'} text-white focus:outline-none placeholder-[#616161]`}
+                    disabled={isEditMode ? !isEditing : false}
+                    className={`w-full ${isEditMode ? 'bg-transparent border-none' : 'h-[56px] bg-[#131313] border border-[#965cdf] rounded-[16px] px-4 focus:ring-2 focus:ring-[#965cdf]'} text-white focus:outline-none placeholder-[#616161] disabled:opacity-60 disabled:cursor-not-allowed`}
                     style={{ 
                       fontFamily: 'Cinzel, serif', 
                       fontWeight: 400,
@@ -371,6 +418,7 @@ export const Journey40Day = () => {
               <Button
                 onClick={handleUploadFiles}
                 className="w-[120px] h-[56px]"
+                disabled={isEditMode ? !isEditing : false}
               >
                 Upload Files
               </Button>
@@ -388,6 +436,7 @@ export const Journey40Day = () => {
                 placeholder="Enter day number (e.g., 1, 2, 3)"
                 min="1"
                 max="40"
+                disabled={isEditMode ? !isEditing : false}
                 className="h-[56px] bg-[#131313] border border-[rgba(255,255,255,0.25)] rounded-[16px] px-4 font-lato text-[16px] leading-[24px] text-white placeholder:text-[#616161] focus:outline-none focus:ring-2 focus:ring-[#965cdf]"
               />
             </div>
@@ -400,7 +449,7 @@ export const Journey40Day = () => {
                   id="journey-is-free"
                   checked={isFree}
                   onChange={(e) => setIsFree(e.target.checked)}
-                  disabled={day !== 1 && day !== 2 && day !== 3}
+                  disabled={(day !== 1 && day !== 2 && day !== 3) || (isEditMode && !isEditing)}
                   className="h-5 w-5 rounded border-[rgba(255,255,255,0.25)] bg-[#131313] text-[#965cdf] focus:ring-2 focus:ring-[#965cdf] disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <label htmlFor="journey-is-free" className="text-white text-[14px] leading-[20px] font-roboto font-normal cursor-pointer">
@@ -425,13 +474,17 @@ export const Journey40Day = () => {
                       key={`new-${file.name}-${index}`}
                       label={audioIndex === 0 ? 'Main Content' : `Question ${audioIndex}`}
                       file={file}
-                      onRemove={() => {
-                        setUploadedAudioFiles((prev) => {
-                          const newFiles = [...prev];
-                          newFiles.splice(index, 1);
-                          return newFiles;
-                        });
-                      }}
+                      onRemove={
+                        isEditMode && !isEditing
+                          ? undefined
+                          : () => {
+                              setUploadedAudioFiles((prev) => {
+                                const newFiles = [...prev];
+                                newFiles.splice(index, 1);
+                                return newFiles;
+                              });
+                            }
+                      }
                       className="w-full"
                     />
                   );
@@ -444,9 +497,13 @@ export const Journey40Day = () => {
                       key={`existing-audio-${index}`}
                       label={audioIndex === 0 ? 'Main Content' : `Question ${audioIndex}`}
                       url={url}
-                      onRemove={() => {
-                        setUploadedAudioUrls((prev) => prev.filter((_, i) => i !== index));
-                      }}
+                      onRemove={
+                        isEditMode && !isEditing
+                          ? undefined
+                          : () => {
+                              setUploadedAudioUrls((prev) => prev.filter((_, i) => i !== index));
+                            }
+                      }
                       className="w-full"
                     />
                   );
@@ -484,15 +541,17 @@ export const Journey40Day = () => {
                         ? 'You should listen to this'
                         : 'Exercise'
                     }
+                    disabled={isEditMode ? !isEditing : false}
                     className="h-[56px] bg-[#131313] border border-[rgba(255,255,255,0.25)] rounded-[16px] px-4 font-lato text-[16px] leading-[24px] text-white placeholder:text-[#616161] focus:outline-none focus:ring-2 focus:ring-[#965cdf]"
                   />
                 </div>
                 {tasks.length > 1 && (
                   <button
                     onClick={() => handleRemoveTask(index)}
-                    className="mb-2 p-2 cursor-pointer hover:opacity-80 transition"
+                    className="mb-2 p-2 cursor-pointer hover:opacity-80 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     type="button"
                     aria-label="Remove task"
+                    disabled={isEditMode ? !isEditing : false}
                   >
                     <CloseIcon width={20} height={20} color="#8f8f8f" />
                   </button>
@@ -503,8 +562,9 @@ export const Journey40Day = () => {
             {/* Add Task Button */}
             <button
               onClick={handleAddTask}
-              className="flex items-center gap-2 h-[56px] bg-[#131313] border border-[#965cdf] rounded-[16px] px-4 text-[#965cdf] font-roboto font-medium text-[16px] leading-[24px] hover:bg-[rgba(150,92,223,0.1)] transition-colors"
+              className="flex items-center gap-2 h-[56px] bg-[#131313] border border-[#965cdf] rounded-[16px] px-4 text-[#965cdf] font-roboto font-medium text-[16px] leading-[24px] hover:bg-[rgba(150,92,223,0.1)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               type="button"
+              disabled={isEditMode ? !isEditing : false}
             >
               <PlusIcon width={20} height={20} color="#965cdf" />
               <span>Add Task</span>
@@ -553,6 +613,18 @@ export const Journey40Day = () => {
         contentTypes={[
           { value: 'audio', label: 'Audio' },
         ]}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => {
+          if (isDeleting) return;
+          setIsDeleteModalOpen(false);
+        }}
+        onConfirm={handleConfirmDelete}
+        itemName={contentTitle || undefined}
+        isLoading={isDeleting}
       />
     </div>
   );
